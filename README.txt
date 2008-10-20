@@ -12,6 +12,17 @@ library today so enjoy it, improve it or go away ;)
   require 'rubygems'
   require 'neoneo'
 
+  project = Neoneo::User.new('user name', 'password').projects.find('My Project')
+  project.name = "Cool project"
+  project.save
+  
+  p project.tasks.map {|t| t.name}
+  
+  project.categories.find('An existing Category').add_task("Cool new Task",
+                                                           :assign_to => 'Some Username')
+
+  project.add_task("Another way to add a task and notify ANYONE ;)", 
+                   :notify => project.members, :category => "Some Category")
 
 == REQUIREMENTS:
 
@@ -20,6 +31,32 @@ library today so enjoy it, improve it or go away ;)
 == INSTALL:
 
 * sudo gem install neoneo
+
+== PERFORMANCE:
+
+As No Kahuna does not provide a real API to their services Neoneo wraps the 
+normal HTML pages as you can see them in your browser. This means not thaaaat
+speedy performance. Especially because the No Kahuna guys using Rails cool 
+CSRF avoiding technology and deliver any form with a token which you have to
+sent back to the server to confirm that you're not working on a stolen session.
+Due to this e.g. the login procedure consists of THREE HTTP request :/
+1. Set the language of the interface to english to allow Neoneo to parse any 
+   messages correctly
+2. Get the login form (with that token)
+3. Post that login form
+
+But I've tried hard to suck as much information as possible out of any HTML
+page Neoneo is receiving and to lazy-load most of the details.
+E.g. when you log in Neoneo can scan all your projects etc from the initial page
+you get after a login. So no second (or forth to be correct ;) ) request is
+needed to get a project list. And if you would like to get all the members of
+a specific project Neoneo checks if they are already present, if not the
+projects detail page is loaded and all the members are gatherd (along with any
+other useful information from that page). If you call the members method again,
+no new request is needed.
+
+Just want to let you know all this. Neoneo is usable but it's more like a
+No Kahuna Information Delivery Bus than a No Kahuna Dragster!
 
 == LICENSE:
 

@@ -6,7 +6,6 @@ module Neoneo
   
   require 'hpricot_extensions'
   require 'utils'
-  require 'conf'
   
   
   BASE_URL    = 'http://nokahuna.com/'
@@ -64,8 +63,8 @@ module Neoneo
       handle_errors(page)
     end
     
-    def post(url)
-      page = super(url)
+    def post(url, options = {})
+      page = super(url, options)
       handle_errors(page)
     end
     
@@ -81,6 +80,8 @@ module Neoneo
     # If the error message does not match any of the specific messages Neoneo
     # tries to catch, a default Neoneo::Error is thrown.
     def handle_errors(page)
+      return page if page.instance_of? WWW::Mechanize::File
+      
       errors = page.search('div#flash.error p').map {|e| e.innerText}
       errors.each do |error|
         case error
@@ -115,7 +116,7 @@ module Neoneo
   # Also there is no way to check the stay logged in option of No Kahuna yet.
   # This is planned for a future version. 
   class User
-    attr_reader :projects
+    attr_reader :projects, :authenticity_token, :agent
   
     def initialize(user, pass)
       @agent = Agent.new
@@ -125,6 +126,7 @@ module Neoneo
       page = @agent.get("#{BASE_URL}login")
 
       form = page.forms.first
+      @authenticity_token = form.authenticity_token
       form.login = user
       form.password = pass
 
@@ -138,7 +140,7 @@ module Neoneo
         own_tasks  = project_link.search('span.taskCount').first.children.first.clean.gsub(/^(\d+)\s\//, '\1').to_i
         id         = project_link.attributes['href'].gsub(/^#{PROJECT_URL}(\d+)\/.*$/, '\1')
 
-        @projects << Project.new(id, name, total_taks, own_tasks, @agent)
+        @projects << Project.new(id, name, total_taks, own_tasks, self)
       end
     
     end
@@ -152,21 +154,21 @@ module Neoneo
   # a project and can also be used to change the name and description of the
   # project.
   class Project
-    attr_reader   :id, :agent
+    attr_reader   :id, :agent, :user
     attr_accessor :name, :total_tasks, :own_tasks, :description
     
-    def initialize(id, name, total_tasks, own_tasks, agent)
+    def initialize(id, name, total_tasks, own_tasks, user)
       @id                = id
       @name              = name
       @total_tasks_count = total_tasks
       @own_tasks_count   = own_tasks
       
-      @agent             = agent
+      @user              = user
     end
     
     def description
       unless @description
-        page = @agent.get(url)
+        page = user.agent.get(url)
         @description = page.search('div.projectDescription p').last.clean
       end
       @description
@@ -177,21 +179,50 @@ module Neoneo
     end
     
     def categories
-      build_categories!(@agent.get(url('tasks/new'))) unless @categories
+      build_categories!(user.agent.get(url('tasks/new'))) unless @categories
       
       @categories
     end
     
     def members
-      build_members!(@agent.get(url('tasks/new'))) unless @members
+      build_members!(user.agent.get(url('tasks/new'))) unless @members
       
       @members
     end
     
+    # The open tasks of the project
     def tasks
-      build_tasks!(@agent.get(url('tasks?group_by=category'))) unless @tasks
+      build_tasks!(user.agent.get(url('tasks?group_by=category'))) unless @tasks
       
       @tasks
+    end
+    
+    # The closed tasks of the project
+    #
+    # For technical reasons I decided to devide the tasks into closed and open
+    # ones hoping that nobody really needs the closed ones ;)
+    # The problem is: At the moment the only chance to get an overview of closed
+    # tasks in the No Kahuna interface is to search for 'task'. But then
+    # you get no category information with the tasks. So I decided that it is
+    # more important to have the category information for any task available 
+    # without the need to load a single page for any task which is possible
+    # with the normal task overview and which the tasks method does.
+    # If you really would like to see the closed tasks use this method by be 
+    # aware, that if you access the category of a closed task a new HTTP request
+    # has to made!
+    #
+    # Also watch out for an other pitfall: If you close or reopen a task they
+    # stay in their original array! So if you do
+    #  project.tasks.first.close!
+    # a call to
+    #  project.tasks
+    # just after that would INCLUDE the closed task and if you already had 
+    # called closed_tasks another call to that would NOT INCLUDE the closed 
+    # task! 
+    def closed_tasks
+      build_closed_tasks!(user.agent.get(url('tasks/search?s=task'))) unless @closed_tasks
+      
+      @closed_tasks
     end
     
     # Adds a task to a project.
@@ -206,7 +237,7 @@ module Neoneo
     #                  :category => project.categories.first,
     #                  :notify   => ['John Doe', project.members.last])
     def add_task(description, options = {})
-      page = @agent.get(url('tasks/new'))
+      page = user.agent.get(url('tasks/new'))
       
       build_categories!(page) unless @categories
       build_members!(page)    unless @members
@@ -225,9 +256,9 @@ module Neoneo
       end
       notifications.compact!
       
-      page = @agent.get(url('tasks/new'))
+      page = user.agent.get(url('tasks/new'))
       form = page.forms.last
-      
+
       form.send('task[body]'.to_sym, description)
       form.send('task[assigned_to_id]'.to_sym, assign_to.id) if assign_to
       form.send('task[category_id]'.to_sym,    category.id) if category
@@ -236,7 +267,7 @@ module Neoneo
         form.add_field!('subscriber_ids[]', notification.id)
       end
       
-      @agent.submit form
+      user.agent.submit form
     end
     
     # Saves the project name and descriptions which you can set simply with
@@ -247,11 +278,11 @@ module Neoneo
     # project.description = 'New description'
     # project.save
     def save
-      page = @agent.get(url('edit'))
+      page = user.agent.get(url('edit'))
       form = page.forms.last
       form.send('project[name]='.to_sym, @name)
       form.send('project[description]='.to_sym, @description) if @description
-      page = @agent.submit form
+      page = user.agent.submit form
 
       raise Error unless page.search('div#flash.notice p').first.clean == 
                         'Successfully saved project'
@@ -300,6 +331,20 @@ module Neoneo
           description = task_link.search('span.taskShortBody').first.clean
           @tasks << Task.new(id, description, category, members.find(user), self)
         end
+      end
+    end
+    
+    def build_closed_tasks!(page)
+      @closed_tasks = SingleSelectArray.new
+      
+      tasks = page.search('div#tasks_for_me ul.search li.done')
+      
+      tasks.each do |task_item|
+        user = Utils::URL.url_unescape(task_item.search('span.avatar a').first.attributes['href'].gsub(/^\/users\//, ''))
+        task_link = task_item.search('a.taskLink')
+        id          = task_link.search('span.taskId').first.clean
+        description = task_link.search('span.taskShortBody').first.clean
+        @closed_tasks << Task.new(id, description, nil, members.find(user), self, true)
       end
     end
   end
@@ -353,18 +398,19 @@ module Neoneo
   
   # Represents a No Kahuna task
   #
-  # At the moment this class is read-only. So you can't change, close or re-open
-  # a task with Neoneo.
+  # At the moment this class is read-only in regards of it's description.
+  # But you can close or reopen a task.
   # This will be improved as soon as possible!
   class Task
-    attr_reader   :id, :user, :project, :category
+    attr_reader   :id, :user, :project
     
-    def initialize(id, description, category, user, project)
+    def initialize(id, description, category, user, project, done = false)
       @id = id
       @description = description
       @category = category
       @user = user
       @project = project
+      @done = done
       
       @uncertain = @description =~ /\.{3}$/
     end
@@ -374,25 +420,53 @@ module Neoneo
       @description
     end
     
+    def category
+      build_category! unless @category
+      
+      @category
+    end
+    
     def url(appendix = '')
       @project.url("tasks/#{@id}/#{appendix}")
     end
     
+    def close!
+      page = @project.user.agent.get(url)
+      form = page.forms.last
+      authenticity_token = form.authenticity_token
+      
+      @project.user.agent.post(url('done'), :authenticity_token => authenticity_token, '_method'.to_sym => 'put')
+      @done = true
+    end
+    
+    def reopen!
+      return unless @done
+
+      page = @project.user.agent.get(url)
+      form = page.forms.last
+      authenticity_token = form.authenticity_token
+      
+      @project.user.agent.post(url('not_done'), :authenticity_token => authenticity_token, '_method'.to_sym => 'put')
+      @done = false
+    end
+    
+    def closed?
+      @done
+    end
+    
     private
-    def build_description!
-      page = project.agent.get(url('edit'))
+    def build_description!(page = nil)
+      page ||= project.user.agent.get(url('edit'))
       form = page.forms.last
       @description = form.send('task[body]'.to_sym)
       @uncertain = false
     end
+    
+    def build_category!(page = nil)
+      page ||= project.user.agent.get(url('edit'))
+      
+      @category = project.categories.find(page.search('span.category').clear)
+    end
   end
   
 end
-
-# user = Neoneo::User.new('NeoNeo_Test', Pass.pass)
-# project = user.projects.find('NeoNeo')
-# p project.tasks.map {|t| a = []; a << (t.user ? t.user.name : ''); a << (t.category ? t.category.name : ''); a}
-# # 
-# # 20.times do 
-# #   project.add_task("NEONEO Test #{Time.now}", :assign_to => project.members[rand(project.members.size)], :category => 'Trash')
-# # end

@@ -58,6 +58,10 @@ no new request is needed.
 Just want to let you know all this. Neoneo is usable but it's more like a
 No Kahuna Information Delivery Bus than a No Kahuna Dragster!
 
+== Etymology
+Neoneo as the hawaiian word for chaos is just what is logical caused by 
+No Kahuna ;)
+
 == LICENSE:
 
 (The MIT License)
